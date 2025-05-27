@@ -1,0 +1,600 @@
+# ==== Bloque 1: Importación de librerías y configuración global ====
+
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk, colorchooser
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from PIL import Image
+
+global_font = 'Helvetica Neue'
+plt.rcParams['font.family'] = global_font
+plt.rcParams['font.size'] = 10
+
+# ==== Bloque 2: Inicialización de la interfaz (constructor) ====
+
+class ExcelPlotter(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Plotter de Excel")
+        self.geometry("1200x800")
+        self.df = None
+        self.group_colors = {}
+        self.group_markers = {}
+        self.group_styles = {}
+        self.last_figure = None
+        self.marker_options = {
+            'Círculo': 'o',
+            'Cuadrado': 's',
+            'Triángulo Arriba': '^',
+            'Triángulo Abajo': 'v',
+            'Diamante': 'D',
+            'Estrella': '*',
+            'Más': '+',
+            'X': 'x'
+        }
+        self.style_options = ['Relleno', 'Sin relleno', 'Punto en el centro']
+        self.palettes = {
+            'Set1': 'tab10',
+            'Pastel1': 'Pastel1',
+            'Paired': 'Paired',
+            'Dark2': 'Dark2',
+            # 'Accent': 'Accent',   # ELIMINADO
+            'Crema': 'copper',
+            'CMYK': 'tab20',
+            'RGB': 'rainbow',
+            'Grises': 'Greys'
+        }
+
+        # === Notebook (pestañas) ===
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill='both', expand=True)
+
+        # --- Tab principal (Data Viz) ---
+        self.main_tab = tk.Frame(self.notebook)
+        self.notebook.add(self.main_tab, text="Data Viz")
+
+        top_frame = tk.Frame(self.main_tab)
+        top_frame.pack(fill='x', pady=5)
+        row1 = tk.Frame(top_frame)
+        row1.pack(fill='x', pady=2)
+        row2 = tk.Frame(top_frame)
+        row2.pack(fill='x', pady=2)
+
+        tk.Button(row1, text="Cargar Excel", command=self.load_excel).pack(side='left', padx=5)
+        for label, attr in (
+            ("Eje X:", 'combo_x'), ("Eje Y:", 'combo_y'),
+            ("Symbol-Grupo-1:", 'combo_symbol1'), ("Symbol-Grupo-2:", 'combo_symbol2'), ("Symbol-Grupo-3:", 'combo_symbol3')
+        ):
+            tk.Label(row1, text=label).pack(side='left')
+            setattr(self, attr, ttk.Combobox(row1, state='readonly', width=15))
+            getattr(self, attr).pack(side='left', padx=3)
+        tk.Button(row1, text="Graficar", command=self.plot).pack(side='right', padx=5)
+        tk.Button(row1, text="Exportar imagen", command=self.export_plot).pack(side='right', padx=5)
+
+        tk.Label(row2, text="Paleta:").pack(side='left')
+        self.combo_palette = ttk.Combobox(row2, state='readonly', width=12)
+        self.combo_palette['values'] = list(self.palettes.keys())
+        self.combo_palette.current(0)
+        self.combo_palette.pack(side='left', padx=3)
+        tk.Button(row2, text="Elegir colores grupos", command=self.choose_group_colors).pack(side='left', padx=5)
+        tk.Button(row2, text="Elegir símbolos grupos", command=self.choose_group_markers).pack(side='left', padx=5)
+        tk.Button(row2, text="Elegir estilo grupos", command=self.choose_group_styles).pack(side='left', padx=5)
+        tk.Label(row2, text="Tamaño punto:").pack(side='left')
+        self.scale_size = tk.Scale(row2, from_=10, to=200, orient='horizontal', length=100)
+        self.scale_size.set(40)
+        self.scale_size.pack(side='left', padx=3)
+        for text, attr, width in (("Título:", 'entry_title', 25), ("Etiqueta X:", 'entry_xlabel', 12), ("Etiqueta Y:", 'entry_ylabel', 12)):
+            tk.Label(row2, text=text).pack(side='left', padx=3)
+            setattr(self, attr, tk.Entry(row2, width=width))
+            getattr(self, attr).pack(side='left', padx=3)
+        tk.Button(row2, text="Reset Labels", command=self.update_default_labels).pack(side='right', padx=5)
+
+        for cb in (self.combo_x, self.combo_y, self.combo_symbol1, self.combo_symbol2, self.combo_symbol3, self.combo_palette):
+            cb.bind("<<ComboboxSelected>>", lambda e: self.update_default_labels())
+
+        main_frame = tk.Frame(self.main_tab)
+        main_frame.pack(fill='both', expand=True)
+        self.plot_frame = tk.Frame(main_frame, bd=2, relief='sunken')
+        self.plot_frame.pack(side='left', fill='both', expand=True, padx=5, pady=5)
+        # Leyenda scrolleable
+        self.legend_frame = tk.LabelFrame(main_frame, text="Leyenda", width=220)
+        self.legend_frame.pack(side='right', fill='y', padx=5, pady=5)
+        self.legend_canvas = tk.Canvas(self.legend_frame, borderwidth=0, width=200)
+        self.legend_canvas.pack(side='left', fill='both', expand=True)
+        self.legend_scroll = tk.Scrollbar(self.legend_frame, orient='vertical', command=self.legend_canvas.yview)
+        self.legend_scroll.pack(side='right', fill='y')
+        self.legend_canvas.configure(yscrollcommand=self.legend_scroll.set)
+        self.legend_inner = tk.Frame(self.legend_canvas)
+        self.legend_window = self.legend_canvas.create_window((0,0), window=self.legend_inner, anchor='nw')
+        self.legend_inner.bind('<Configure>', lambda event: self.legend_canvas.configure(scrollregion=self.legend_canvas.bbox('all')))
+
+# ==== Bloque 5: Pestaña TAS ====
+
+        # --- Tab TAS ---
+        self.tas_tab = tk.Frame(self.notebook)
+        self.notebook.add(self.tas_tab, text="TAS")
+        self._init_tas_tab()
+
+    def _init_tas_tab(self):
+        import os
+        import numpy as np
+        from PIL import Image
+
+        # Frame de control y plot
+        controls = tk.Frame(self.tas_tab)
+        controls.pack(fill='x', pady=5)
+        plot_frame = tk.Frame(self.tas_tab)
+        plot_frame.pack(side='left', fill='both', expand=True, padx=5, pady=5)
+        self.tas_plot_frame = plot_frame  # Para limpiar al graficar de nuevo
+
+        # Leyenda scrolleable (replicada igual que en pestaña 1)
+        self.tas_legend_frame = tk.LabelFrame(self.tas_tab, text="Leyenda", width=220)
+        self.tas_legend_frame.pack(side='right', fill='y', padx=5, pady=5)
+        self.tas_legend_canvas = tk.Canvas(self.tas_legend_frame, borderwidth=0, width=200)
+        self.tas_legend_canvas.pack(side='left', fill='both', expand=True)
+        self.tas_legend_scroll = tk.Scrollbar(self.tas_legend_frame, orient='vertical', command=self.tas_legend_canvas.yview)
+        self.tas_legend_scroll.pack(side='right', fill='y')
+        self.tas_legend_canvas.configure(yscrollcommand=self.tas_legend_scroll.set)
+        self.tas_legend_inner = tk.Frame(self.tas_legend_canvas)
+        self.tas_legend_window = self.tas_legend_canvas.create_window((0,0), window=self.tas_legend_inner, anchor='nw')
+        self.tas_legend_inner.bind('<Configure>', lambda event: self.tas_legend_canvas.configure(scrollregion=self.tas_legend_canvas.bbox('all')))
+
+        # --- Cargar imagen y guardar aspecto ---
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        tas_path = os.path.join(script_dir, "TAS01.tif")
+        try:
+            img = Image.open(tas_path).convert("RGBA")
+            background = Image.new("RGBA", img.size, (255,255,255,255))
+            img_no_alpha = Image.alpha_composite(background, img).convert("RGB")
+            img_arr = np.array(img_no_alpha)
+            self.tas_img_shape = img_arr.shape  # (alto, ancho, 3)
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo cargar TAS01.tif:\n{e}")
+            return
+
+        # --- Controles para elegir columnas ---
+        tk.Label(controls, text="¿Cuál es la columna de Sílice?").pack(side='left', padx=5)
+        self.tas_combo_x = ttk.Combobox(controls, state='readonly', width=15)
+        self.tas_combo_x.pack(side='left')
+        tk.Label(controls, text="¿Cuál es la columna de Álcalis?").pack(side='left', padx=5)
+        self.tas_combo_y = ttk.Combobox(controls, state='readonly', width=15)
+        self.tas_combo_y.pack(side='left')
+        tk.Button(controls, text="Graficar sobre TAS", command=self.plot_tas).pack(side='left', padx=10)
+
+        # Llenar combos si hay Excel cargado
+        self.after(100, self._update_tas_combos)
+
+        # Primer plot sólo imagen
+        self._draw_tas_base(img_arr)
+
+    def _update_tas_combos(self):
+        # Llenar las opciones de columna si ya se cargó un Excel
+        if hasattr(self, "df") and self.df is not None:
+            num_cols = self.df.select_dtypes(include='number').columns.tolist()
+            self.tas_combo_x['values'] = num_cols
+            self.tas_combo_y['values'] = num_cols
+            if num_cols:
+                self.tas_combo_x.current(0)
+                self.tas_combo_y.current(0)
+
+    def _draw_tas_base(self, img_arr):
+        # Dibuja el fondo TAS sin puntos y limpia la leyenda
+        for w in self.tas_plot_frame.winfo_children():
+            w.destroy()
+        for w in self.tas_legend_inner.winfo_children():
+            w.destroy()
+        # Mantener el aspecto real de la imagen
+        img_height, img_width = img_arr.shape[0], img_arr.shape[1]
+        aspect = img_width / img_height
+        fig_width = 8
+        fig_height = fig_width / aspect
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+        ax.imshow(img_arr, extent=[40, 75, 0, 15], origin='upper', aspect='auto')
+        ax.set_xlim(40, 75)
+        ax.set_ylim(0, 15)
+        ax.set_xlabel("SiO2 (%)")
+        ax.set_ylabel("Na2O + K2O (%)")
+        ax.set_xticks(list(range(50, 76, 5)))  # 50, 55, 60, 65, 70, 75
+        ax.set_yticks(list(range(0, 15, 2)))   # 0, 2, ..., 14
+        ax.grid(False)
+        fig.tight_layout()
+        canvas = FigureCanvasTkAgg(fig, master=self.tas_plot_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill='both', expand=True)
+        self.last_tas_base = (fig, ax)
+
+    def plot_tas(self):
+        # Graficar puntos sobre el fondo TAS usando la selección del usuario y generar leyenda
+        for w in self.tas_plot_frame.winfo_children():
+            w.destroy()
+        for w in self.tas_legend_inner.winfo_children():
+            w.destroy()
+        import os
+        import numpy as np
+        from PIL import Image
+
+        # --- Recargar la imagen por si el usuario vuelve a graficar ---
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        tas_path = os.path.join(script_dir, "TAS01.tif")
+        img = Image.open(tas_path).convert("RGBA")
+        background = Image.new("RGBA", img.size, (255,255,255,255))
+        img_no_alpha = Image.alpha_composite(background, img).convert("RGB")
+        img_arr = np.array(img_no_alpha)
+        img_height, img_width = img_arr.shape[0], img_arr.shape[1]
+        aspect = img_width / img_height
+        fig_width = 8
+        fig_height = fig_width / aspect
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+        ax.imshow(img_arr, extent=[40, 75, 0, 15], origin='upper', aspect='auto')
+        ax.set_xlim(40, 75)
+        ax.set_ylim(0, 15)
+        ax.set_xlabel("SiO2 (%)")
+        ax.set_ylabel("Na2O + K2O (%)")
+        ax.set_xticks(list(range(50, 76, 5)))
+        ax.set_yticks(list(range(0, 15, 2)))
+        ax.grid(False)
+
+        # ---- Ploteo de puntos ----
+        if not (hasattr(self, "df") and self.df is not None):
+            messagebox.showwarning("Aviso", "Carga primero un archivo Excel.")
+            return
+        x_col = self.tas_combo_x.get()
+        y_col = self.tas_combo_y.get()
+        g1_col = self.combo_symbol1.get()
+        g2_col = self.combo_symbol2.get()
+        g3_col = self.combo_symbol3.get()
+        size_pt = self.scale_size.get()
+        cmap = plt.get_cmap(self.palettes.get(self.combo_palette.get(), 'tab10'))
+        if not (x_col and y_col and g1_col and g2_col and g3_col):
+            messagebox.showwarning("Aviso", "Selecciona columnas para Sílice, Álcalis y todos los grupos.")
+            return
+
+        cats1 = self.df[g1_col].astype(str).unique()
+        cats2 = self.df[g2_col].astype(str).unique()
+        cats3 = self.df[g3_col].astype(str).unique()
+        default_colors = [cmap(i/(len(cats1)-1) if len(cats1)>1 else 0.5) for i in range(len(cats1))]
+
+        legend_info = []
+        for i, cat1 in enumerate(cats1):
+            for j, cat2 in enumerate(cats2):
+                for k, cat3 in enumerate(cats3):
+                    mask = (
+                        (self.df[g1_col].astype(str) == cat1) &
+                        (self.df[g2_col].astype(str) == cat2) &
+                        (self.df[g3_col].astype(str) == cat3)
+                    )
+                    if not mask.any():
+                        continue
+                    color = self.group_colors.get(cat1, default_colors[i])
+                    marker = self.group_markers.get(cat2, list(self.marker_options.values())[0])
+                    style = self.group_styles.get(cat3, 'Relleno')
+                    if style == 'Relleno':
+                        facecolor = color
+                        edgecolor = 'black'
+                        center_point = False
+                    elif style == 'Sin relleno':
+                        facecolor = 'none'
+                        edgecolor = color
+                        center_point = False
+                    elif style == 'Punto en el centro':
+                        facecolor = 'none'
+                        edgecolor = color
+                        center_point = True
+                    ax.scatter(
+                        self.df.loc[mask, x_col],
+                        self.df.loc[mask, y_col],
+                        facecolor=facecolor,
+                        edgecolor=edgecolor,
+                        marker=marker,
+                        s=size_pt,
+                        alpha=0.8
+                    )
+                    if center_point:
+                        ax.scatter(
+                            self.df.loc[mask, x_col],
+                            self.df.loc[mask, y_col],
+                            facecolor=color,
+                            edgecolor='none',
+                            marker='o',
+                            s=max(size_pt//6, 12),
+                            alpha=0.8
+                        )
+                    legend_info.append((marker, facecolor, edgecolor, color, center_point, f"{cat1} | {cat2} | {cat3}"))
+
+        fig.tight_layout()
+        canvas = FigureCanvasTkAgg(fig, master=self.tas_plot_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill='both', expand=True)
+
+        # ---- Leyenda scrolleable ----
+        from matplotlib.lines import Line2D
+        tk.Label(self.tas_legend_inner, text=f"{g1_col} | {g2_col} | {g3_col}", font=("Arial", 10, "bold")).pack(pady=(5,5))
+        for marker, facecolor, edgecolor, color, center_point, label in legend_info:
+            fig_leg, ax_leg = plt.subplots(figsize=(0.5,0.5), dpi=60)
+            ax_leg.axis('off')
+            fc = 'white' if facecolor == 'none' else facecolor
+            ax_leg.scatter([0], [0], marker=marker, s=60, facecolor=fc, edgecolor=edgecolor, linewidth=1.5, alpha=0.8)
+            if center_point:
+                ax_leg.scatter([0], [0], marker='o', s=16, facecolor=color, edgecolor='none', alpha=0.8)
+            fig_leg.subplots_adjust(0,0,1,1)
+            canvas_leg = FigureCanvasTkAgg(fig_leg, master=self.tas_legend_inner)
+            canvas_leg.draw()
+            w = canvas_leg.get_tk_widget()
+            w.pack(side='top', anchor='w')
+            tk.Label(self.tas_legend_inner, text=label, anchor='w').pack(fill='x', padx=5, pady=(0,5))
+            plt.close(fig_leg)
+
+
+# ==== Bloque 6: Controles de atributos visuales ====
+
+    def choose_group_colors(self):
+        if self.df is None or not self.combo_symbol1.get():
+            messagebox.showwarning("Aviso", "Carga un archivo y selecciona Symbol-Grupo-1 primero.")
+            return
+        cats = list(self.df[self.combo_symbol1.get()].astype(str).unique())
+        dlg = tk.Toplevel(self)
+        dlg.title("Elegir color por grupo 1")
+        for i, cat in enumerate(cats):
+            tk.Label(dlg, text=cat).grid(row=i, column=0, padx=5, pady=2, sticky='w')
+            btn = tk.Button(dlg, text="Color", width=8)
+            btn.grid(row=i, column=1, padx=5, pady=2)
+            btn.configure(command=lambda c=cat, b=btn: self._pick_color(c, b))
+            if cat in self.group_colors:
+                btn.config(bg=self.group_colors[cat])
+        tk.Button(dlg, text="Cerrar", command=dlg.destroy).grid(row=len(cats), columnspan=2, pady=8)
+
+    def _pick_color(self, category, btn_widget):
+        code = colorchooser.askcolor(title=f"Color para '{category}'")[1]
+        if code:
+            self.group_colors[category] = code
+            btn_widget.config(bg=code)
+
+    def choose_group_markers(self):
+        if self.df is None or not self.combo_symbol2.get():
+            messagebox.showwarning("Aviso", "Carga un archivo y selecciona Symbol-Grupo-2 primero.")
+            return
+        cats = list(self.df[self.combo_symbol2.get()].astype(str).unique())
+        dlg = tk.Toplevel(self)
+        dlg.title("Elegir símbolo por grupo 2")
+        for i, cat in enumerate(cats):
+            tk.Label(dlg, text=cat).grid(row=i, column=0, padx=5, pady=2, sticky='w')
+            cb = ttk.Combobox(dlg, values=list(self.marker_options.keys()), state='readonly', width=15)
+            default = next((k for k, v in self.marker_options.items() if self.group_markers.get(cat) == v), list(self.marker_options.keys())[0])
+            cb.set(default)
+            cb.grid(row=i, column=1, padx=5, pady=2)
+            cb.bind("<<ComboboxSelected>>", lambda e, c=cat, w=cb: self._pick_marker(c, w))
+        tk.Button(dlg, text="Cerrar", command=dlg.destroy).grid(row=len(cats), columnspan=2, pady=8)
+
+    def _pick_marker(self, category, widget):
+        sel = widget.get()
+        self.group_markers[category] = self.marker_options[sel]
+
+    def choose_group_styles(self):
+        if self.df is None or not self.combo_symbol3.get():
+            messagebox.showwarning("Aviso", "Carga un archivo y selecciona Symbol-Grupo-3 primero.")
+            return
+        cats = list(self.df[self.combo_symbol3.get()].astype(str).unique())
+        dlg = tk.Toplevel(self)
+        dlg.title("Elegir estilo por grupo 3")
+        for i, cat in enumerate(cats):
+            tk.Label(dlg, text=cat).grid(row=i, column=0, padx=5, pady=2, sticky='w')
+            cb = ttk.Combobox(dlg, values=self.style_options, state='readonly', width=18)
+            cb.set(self.group_styles.get(cat, self.style_options[0]))
+            cb.grid(row=i, column=1, padx=5, pady=2)
+            cb.bind("<<ComboboxSelected>>", lambda e, c=cat, w=cb: self._pick_style(c, w))
+        tk.Button(dlg, text="Cerrar", command=dlg.destroy).grid(row=len(cats), columnspan=2, pady=8)
+
+    def _pick_style(self, category, widget):
+        sel = widget.get()
+        self.group_styles[category] = sel
+
+# ==== Bloque 7: Carga de datos ====
+
+    def load_excel(self):
+        path = filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx *.xls")])
+        if not path:
+            return
+        try:
+            self.df = pd.read_excel(path)
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo leer el Excel:\n{e}")
+            return
+        self.num_cols = self.df.select_dtypes(include='number').columns.tolist()
+        self.txt_cols = self.df.select_dtypes(exclude='number').columns.tolist()
+        for combo, vals in (
+            (self.combo_x, self.num_cols), (self.combo_y, self.num_cols),
+            (self.combo_symbol1, self.txt_cols), (self.combo_symbol2, self.txt_cols), (self.combo_symbol3, self.txt_cols)
+        ):
+            combo['values'] = vals
+            if vals:
+                combo.current(0)
+        self.group_colors.clear()
+        self.group_markers.clear()
+        self.group_styles.clear()
+        self.update_default_labels()
+        messagebox.showinfo("Detectado", f"{len(self.num_cols)} columnas numéricas y {len(self.txt_cols)} de texto detectadas.")
+
+        # NUEVO: actualizar combos de la pestaña TAS si existen
+        if hasattr(self, "tas_combo_x") and hasattr(self, "tas_combo_y"):
+            self.tas_combo_x['values'] = self.num_cols
+            self.tas_combo_y['values'] = self.num_cols
+            if self.num_cols:
+                self.tas_combo_x.current(0)
+                self.tas_combo_y.current(0)
+
+# ==== Bloque 8: Actualización de etiquetas ====
+
+    def update_default_labels(self):
+        x = self.combo_x.get()
+        y = self.combo_y.get()
+        g1 = self.combo_symbol1.get()
+        g2 = self.combo_symbol2.get()
+        g3 = self.combo_symbol3.get()
+        title = f"{y} vs {x} por {g1}, {g2} y {g3}" if x and y and g1 and g2 and g3 else ""
+        self.entry_title.delete(0, tk.END)
+        self.entry_title.insert(0, title)
+        self.entry_xlabel.delete(0, tk.END)
+        self.entry_xlabel.insert(0, x)
+        self.entry_ylabel.delete(0, tk.END)
+        self.entry_ylabel.insert(0, y)
+
+# ==== Bloque 9: Graficado y leyenda ====
+
+    def plot(self):
+        if self.df is None:
+            messagebox.showwarning("Aviso", "Carga primero un archivo Excel.")
+            return
+        x_col = self.combo_x.get()
+        y_col = self.combo_y.get()
+        g1_col = self.combo_symbol1.get()
+        g2_col = self.combo_symbol2.get()
+        g3_col = self.combo_symbol3.get()
+        size_pt = self.scale_size.get()
+        cmap = plt.get_cmap(self.palettes.get(self.combo_palette.get(), 'tab10'))
+        if not (x_col and y_col and g1_col and g2_col and g3_col):
+            messagebox.showwarning("Aviso", "Selecciona todos los grupos y ejes antes de graficar.")
+            return
+
+        for w in self.plot_frame.winfo_children():
+            w.destroy()
+        for w in self.legend_inner.winfo_children():
+            w.destroy()
+        self.legend_canvas.yview_moveto(0)
+
+        cats1 = self.df[g1_col].astype(str).unique()
+        cats2 = self.df[g2_col].astype(str).unique()
+        cats3 = self.df[g3_col].astype(str).unique()
+        default_colors = [cmap(i/(len(cats1)-1) if len(cats1)>1 else 0.5) for i in range(len(cats1))]
+
+        fig, ax = plt.subplots(figsize=(6,6))
+        self.last_figure = fig  # Para exportar luego
+        ax.set_box_aspect(1)
+        ax.set_facecolor('white')
+        ax.grid(False)
+
+        handles, labels = [], []
+        legend_info = []
+        for i, cat1 in enumerate(cats1):
+            for j, cat2 in enumerate(cats2):
+                for k, cat3 in enumerate(cats3):
+                    mask = (
+                        (self.df[g1_col].astype(str) == cat1) &
+                        (self.df[g2_col].astype(str) == cat2) &
+                        (self.df[g3_col].astype(str) == cat3)
+                    )
+                    if not mask.any():
+                        continue
+                    color = self.group_colors.get(cat1, default_colors[i])
+                    marker = self.group_markers.get(cat2, list(self.marker_options.values())[0])
+                    style = self.group_styles.get(cat3, 'Relleno')
+                    if style == 'Relleno':
+                        facecolor = color
+                        edgecolor = 'black'
+                        center_point = False
+                    elif style == 'Sin relleno':
+                        facecolor = 'none'
+                        edgecolor = color
+                        center_point = False
+                    elif style == 'Punto en el centro':
+                        facecolor = 'none'
+                        edgecolor = color
+                        center_point = True
+                    sc = ax.scatter(
+                        self.df.loc[mask, x_col],
+                        self.df.loc[mask, y_col],
+                        facecolor=facecolor,
+                        edgecolor=edgecolor,
+                        marker=marker,
+                        s=size_pt,
+                        alpha=0.8,
+                        label=f"{cat1} | {cat2} | {cat3}"
+                    )
+                    if center_point:
+                        ax.scatter(
+                            self.df.loc[mask, x_col],
+                            self.df.loc[mask, y_col],
+                            facecolor=color,
+                            edgecolor='none',
+                            marker='o',
+                            s=max(size_pt//6, 12),
+                            alpha=0.8
+                        )
+                    handles.append(sc)
+                    labels.append(f"{cat1} | {cat2} | {cat3}")
+                    legend_info.append((marker, facecolor, edgecolor, color, center_point, f"{cat1} | {cat2} | {cat3}"))
+
+        ax.set_title(self.entry_title.get(), fontsize=14)
+        ax.set_xlabel(self.entry_xlabel.get(), fontsize=12)
+        ax.set_ylabel(self.entry_ylabel.get(), fontsize=12)
+        ax.tick_params(labelsize=10)
+        fig.tight_layout()
+
+        canvas = FigureCanvasTkAgg(fig, master=self.plot_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill='both', expand=True)
+
+        # Leyenda con símbolo real y color
+        from matplotlib.lines import Line2D
+        tk.Label(self.legend_inner, text=f"{g1_col} | {g2_col} | {g3_col}", font=("Arial", 10, "bold")).pack(pady=(5,5))
+        for marker, facecolor, edgecolor, color, center_point, label in legend_info:
+            fig_leg, ax_leg = plt.subplots(figsize=(0.5,0.5), dpi=60)
+            ax_leg.axis('off')
+            fc = 'white' if facecolor == 'none' else facecolor
+            ax_leg.scatter([0], [0], marker=marker, s=60, facecolor=fc, edgecolor=edgecolor, linewidth=1.5, alpha=0.8)
+            if center_point:
+                ax_leg.scatter([0], [0], marker='o', s=16, facecolor=color, edgecolor='none', alpha=0.8)
+            fig_leg.subplots_adjust(0,0,1,1)
+            canvas_leg = FigureCanvasTkAgg(fig_leg, master=self.legend_inner)
+            canvas_leg.draw()
+            w = canvas_leg.get_tk_widget()
+            w.pack(side='top', anchor='w')
+            tk.Label(self.legend_inner, text=label, anchor='w').pack(fill='x', padx=5, pady=(0,5))
+            plt.close(fig_leg)
+
+# ==== Bloque 10: Exportación de imagen ====
+
+    def export_plot(self):
+        if not hasattr(self, 'last_figure') or self.last_figure is None:
+            messagebox.showwarning("Aviso", "Primero genera un gráfico para exportar.")
+            return
+        filetypes = [
+            ("PNG", "*.png"),
+            ("JPEG", "*.jpg"),
+            ("TIFF", "*.tiff;*.tif"),
+            ("PDF", "*.pdf"),
+            ("SVG", "*.svg"),
+            ("Postscript", "*.ps"),
+            ("EPS", "*.eps"),
+            ("Adobe Illustrator (AI)", "*.ai")
+        ]
+        options = {
+            'defaultextension': ".png",
+            'filetypes': filetypes,
+            'title': "Guardar imagen"
+        }
+        file_path = filedialog.asksaveasfilename(**options)
+        if not file_path:
+            return
+
+        ext = file_path.split('.')[-1].lower()
+        savefig_kwargs = {}
+        if ext in ['jpg', 'jpeg']:
+            savefig_kwargs['dpi'] = 300
+            savefig_kwargs['quality'] = 95
+        elif ext in ['png', 'tiff', 'tif']:
+            savefig_kwargs['dpi'] = 300
+        elif ext == 'ai':
+            file_path_pdf = file_path[:-3] + 'pdf'
+            self.last_figure.savefig(file_path_pdf, bbox_inches='tight')
+            import os
+            os.rename(file_path_pdf, file_path)
+            return
+
+        self.last_figure.savefig(file_path, bbox_inches='tight', **savefig_kwargs)
+
+# ==== Bloque 11: Ejecución principal ====
+
+if __name__ == "__main__":
+    app = ExcelPlotter()
+    app.mainloop()
